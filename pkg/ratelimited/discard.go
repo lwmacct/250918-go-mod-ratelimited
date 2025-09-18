@@ -166,7 +166,7 @@ func (w *DiscardWriter) Write(p []byte) (int, error) {
 	// 批量令牌管理
 	if atomic.LoadInt64(&w.remainingTokens) < int64(n) {
 		batchSize := w.batchSize
-		
+
 		// 注意：配额检查已在前面完成，这里不再重复检查
 		// 如果有配额限制，batchSize可能需要调整以适应剩余配额
 		if w.sharedRemaining != nil && batchSize > int64(n) {
