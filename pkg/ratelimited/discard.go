@@ -65,7 +65,7 @@ type DiscardWriter struct {
 
 	// 批量令牌处理
 	batchSize       int64 // 批量申请令牌大小
-	remainingTokens int64 // 当前批次剩余令牌
+	remainingTokens int64 // 当前批次剩余令牌 (需要原子访问)
 }
 
 // DiscardWriterOption 配置选项
@@ -136,29 +136,42 @@ func (w *DiscardWriter) Write(p []byte) (int, error) {
 	default:
 	}
 
-	// 有限流：检查配额限制
+	// 有限流：使用原子操作安全地检查和预留配额
 	if w.sharedRemaining != nil {
-		current := atomic.LoadInt64(w.sharedRemaining)
-		if current <= 0 {
-			return 0, io.EOF // 配额耗尽
-		}
-		if int64(n) > current {
-			n = int(current) // 调整到剩余配额
-		}
-		if n <= 0 {
-			return 0, io.EOF
+		for {
+			current := atomic.LoadInt64(w.sharedRemaining)
+			if current <= 0 {
+				return 0, io.EOF // 配额耗尽
+			}
+
+			// 确定实际可用的字节数
+			available := int(current)
+			if n > available {
+				n = available // 调整到剩余配额
+			}
+			if n <= 0 {
+				return 0, io.EOF
+			}
+
+			// 原子地预留配额，避免竞态条件
+			newRemaining := current - int64(n)
+			if atomic.CompareAndSwapInt64(w.sharedRemaining, current, newRemaining) {
+				// 成功预留配额，跳出循环
+				break
+			}
+			// 如果CAS失败，说明其他goroutine修改了配额，重试
 		}
 	}
 
 	// 批量令牌管理
-	if w.remainingTokens < int64(n) {
+	if atomic.LoadInt64(&w.remainingTokens) < int64(n) {
 		batchSize := w.batchSize
-		if w.sharedRemaining != nil {
-			// 有限流模式：不要申请超过剩余配额的令牌
-			remaining := atomic.LoadInt64(w.sharedRemaining)
-			if remaining < batchSize {
-				batchSize = remaining
-			}
+		
+		// 注意：配额检查已在前面完成，这里不再重复检查
+		// 如果有配额限制，batchSize可能需要调整以适应剩余配额
+		if w.sharedRemaining != nil && batchSize > int64(n) {
+			// 在有配额限制的情况下，避免申请过多令牌
+			batchSize = int64(n)
 		}
 
 		if batchSize <= 0 {
@@ -167,9 +180,13 @@ func (w *DiscardWriter) Write(p []byte) (int, error) {
 
 		// 为所有速率限制器申请令牌
 		if err := w.waitForTokens(int(batchSize)); err != nil {
+			// 如果令牌申请失败且我们已经预留了配额，需要回滚配额
+			if w.sharedRemaining != nil {
+				atomic.AddInt64(w.sharedRemaining, int64(n)) // 回滚配额
+			}
 			return 0, err
 		}
-		w.remainingTokens = batchSize
+		atomic.StoreInt64(&w.remainingTokens, batchSize)
 	}
 
 	// 更新统计
@@ -180,13 +197,10 @@ func (w *DiscardWriter) Write(p []byte) (int, error) {
 		atomic.AddInt64(w.bytesWritten, int64(n))
 	}
 
-	// 更新配额
-	if w.sharedRemaining != nil {
-		atomic.AddInt64(w.sharedRemaining, -int64(n))
-	}
+	// 配额已在前面通过CAS操作预留，这里不需要再次扣除
 
 	// 消费令牌
-	w.remainingTokens -= int64(n)
+	atomic.AddInt64(&w.remainingTokens, -int64(n))
 
 	// 数据直接丢弃，不做任何存储
 	return n, nil

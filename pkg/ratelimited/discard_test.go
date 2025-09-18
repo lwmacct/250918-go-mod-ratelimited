@@ -629,29 +629,29 @@ func TestDiscardWriter_FaultTolerance(t *testing.T) {
 	t.Run("上下文取消时立即返回错误", func(t *testing.T) {
 		// Arrange: 每个子测试使用独立的计数器
 		var bytesWritten int64
-		
+
 		// 创建包含模拟限制器的链
 		mockLimiter := &MockFailingLimiter{shouldFail: false}
 		normalLimiter := rate.NewLimiter(100000, 100000)
-		
+
 		limiters := []Limiter{mockLimiter, normalLimiter}
-		
+
 		// 创建可取消的上下文
 		ctx, cancel := context.WithCancel(context.Background())
-		
+
 		writer := NewDiscardWriter(limiters,
 			WithContext(ctx),
 			WithBytesCounter(&bytesWritten),
 		)
-		
+
 		// 立即取消上下文
 		cancel()
-		
+
 		testData := createTestData(100)
-		
+
 		// Act
 		n, err := writer.Write(testData)
-		
+
 		// Assert
 		assertEqual(t, context.Canceled, err, "应该返回上下文取消错误")
 		assertEqual(t, 0, n, "取消时不应该写入任何数据")
@@ -662,26 +662,26 @@ func TestDiscardWriter_FaultTolerance(t *testing.T) {
 		// Arrange: 独立的测试环境
 		setup := newTestSetup()
 		defer setup.cleanup()
-		
+
 		// 创建包含会失败的限制器
 		failingLimiter := &MockFailingLimiter{
 			shouldFail: true,
 			failError:  io.ErrUnexpectedEOF, // 非上下文错误
 		}
 		normalLimiter := rate.NewLimiter(100000, 100000)
-		
+
 		limiters := []Limiter{failingLimiter, normalLimiter}
-		
+
 		writer := NewDiscardWriter(limiters,
 			WithContext(setup.ctx),
 			WithBytesCounter(&setup.bytesWritten),
 		)
-		
+
 		testData := createTestData(100)
-		
+
 		// Act
 		n, err := writer.Write(testData)
-		
+
 		// Assert
 		assertNoError(t, err, "非致命错误应该被跳过，写入应该成功")
 		assertEqual(t, len(testData), n, "应该成功写入所有数据")
@@ -692,7 +692,7 @@ func TestDiscardWriter_FaultTolerance(t *testing.T) {
 		// Arrange: 独立的测试环境
 		setup := newTestSetup()
 		defer setup.cleanup()
-		
+
 		// 创建所有都会失败的限制器
 		failingLimiter1 := &MockFailingLimiter{
 			shouldFail: true,
@@ -702,19 +702,19 @@ func TestDiscardWriter_FaultTolerance(t *testing.T) {
 			shouldFail: true,
 			failError:  io.ErrShortWrite,
 		}
-		
+
 		limiters := []Limiter{failingLimiter1, failingLimiter2}
-		
+
 		writer := NewDiscardWriter(limiters,
 			WithContext(setup.ctx),
 			WithBytesCounter(&setup.bytesWritten),
 		)
-		
+
 		testData := createTestData(100)
-		
+
 		// Act
 		n, err := writer.Write(testData)
-		
+
 		// Assert
 		assertEqual(t, io.ErrShortWrite, err, "应该返回最后一个错误")
 		assertEqual(t, 0, n, "所有限制器失败时不应该写入数据")
@@ -725,27 +725,27 @@ func TestDiscardWriter_FaultTolerance(t *testing.T) {
 		// Arrange: 独立的测试环境
 		setup := newTestSetup()
 		defer setup.cleanup()
-		
+
 		successLimiter1 := rate.NewLimiter(100000, 100000)
 		failingLimiter := &MockFailingLimiter{
 			shouldFail: true,
 			failError:  io.ErrUnexpectedEOF,
 		}
 		successLimiter2 := rate.NewLimiter(50000, 50000)
-		
+
 		limiters := []Limiter{successLimiter1, failingLimiter, successLimiter2}
-		
+
 		writer := NewDiscardWriter(limiters,
 			WithContext(setup.ctx),
 			WithBytesCounter(&setup.bytesWritten),
 			WithBatchSize(100), // 小批次避免突发容量问题
 		)
-		
+
 		testData := createTestData(50)
-		
+
 		// Act
 		n, err := writer.Write(testData)
-		
+
 		// Assert
 		assertNoError(t, err, "部分成功应该允许写入继续")
 		assertEqual(t, len(testData), n, "应该成功写入数据")
