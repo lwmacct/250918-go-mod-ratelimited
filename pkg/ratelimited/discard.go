@@ -193,14 +193,33 @@ func (w *DiscardWriter) Write(p []byte) (int, error) {
 }
 
 // waitForTokens 为所有速率限制器等待令牌
+// 对于上下文相关错误（取消、超时）立即返回，对于其他错误则跳过该限制器继续处理
 func (w *DiscardWriter) waitForTokens(n int) error {
+	var lastErr error
+	successCount := 0
+
 	for _, limiter := range w.limiters {
 		if limiter != nil {
 			if err := limiter.WaitN(w.ctx, n); err != nil {
-				return err
+				// 检查是否为上下文相关的致命错误
+				if w.ctx.Err() != nil {
+					// 上下文被取消或超时，立即返回
+					return err
+				}
+
+				// 非致命错误，记录并继续处理下一个限制器
+				lastErr = err
+				continue
 			}
+			successCount++
 		}
 	}
+
+	// 如果所有限制器都失败了，返回最后一个错误
+	if successCount == 0 && lastErr != nil {
+		return lastErr
+	}
+
 	return nil
 }
 
